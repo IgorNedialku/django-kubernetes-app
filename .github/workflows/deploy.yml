@@ -57,7 +57,6 @@ jobs:
     - name: Ensure deployment uses local image
       run: |
         echo "🔧 Ensuring deployment uses local image..."
-        # Патчим deployment чтобы использовать локальный образ
         kubectl patch deployment django-deployment -n ${{ env.K8S_NAMESPACE }} \
           --type='json' \
           -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value":"django-kubernetes-app:local"}]'
@@ -88,7 +87,14 @@ jobs:
     - name: Cleanup old replicasets
       run: |
         echo "🧹 Cleaning up old replicasets..."
-        kubectl delete replicaset -n ${{ env.K8S_NAMESPACE }} --selector=app=django-app --field-selector=status.replicas=0 --ignore-not-found=true
+        # Правильная команда очистки - удаляем ReplicaSet с 0 репликами
+        kubectl get replicaset -n ${{ env.K8S_NAMESPACE }} --selector=app=django-app --no-headers | \
+        while read name desired current ready age rest; do
+          if [ "$current" -eq "0" ]; then
+            echo "Deleting replicaset: $name"
+            kubectl delete replicaset $name -n ${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+          fi
+        done
         echo "✅ Cleanup completed"
         
     - name: Test application accessibility
