@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "django-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      {{- include "django-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "django-app.selectorLabels" . | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.app.port }}"  # Используем порт контейнера
+        prometheus.io/path: "/metrics"
+      {{- end }}
+    spec:
+      {{- if .Values.image.pullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecret }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port }}
+          env:
+            - name: DB_NAME
+              value: "django_app"
+            - name: DB_USER
+              value: "django_user"
+            - name: DB_PASSWORD
+              value: "postgres_password_123"
+            - name: DB_HOST
+              value: "postgres-service"
+            - name: DEBUG
+              value: "True"
+            - name: ALLOWED_HOSTS
+              value: "*"
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}

@@ -1,0 +1,27 @@
+image:
+  repository: django-app-local
+  tag: latest
+  pullPolicy: Never
+
+app:
+  replicas: 1
+  port: 8000  # Контейнер порт
+  service:
+    type: NodePort
+    port: 8000  # Сервис порт
+    nodePort: 30080
+  env:
+    DB_NAME: "django_app"
+    DB_USER: "django_user"
+    DB_PASSWORD: "postgres_password_123"
+    DB_HOST: "postgres-service"
+    DEBUG: "True"
+    ALLOWED_HOSTS: "*"
+    SECRET_KEY: "django-insecure-test-key-123"
+
+monitoring:
+  enabled: true
+  prometheusPort: 8000  # Правильный порт для метрик
+
+global:
+  namespace: django-app

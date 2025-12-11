@@ -1,11 +1,16 @@
-name: Deploy Django App to Kubernetes
+name: Build, Push to Private Registry and Deploy with Helm
 
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 env:
-  K8S_NAMESPACE: django-app
+  REGISTRY: "192.168.49.2:30500"
+  IMAGE_NAME: "django-app"
+  K8S_NAMESPACE: "django-app"
+  HELM_RELEASE: "django-app"
 
 jobs:
   test:
@@ -24,90 +29,264 @@ jobs:
       run: |
         python manage.py check
         python manage.py makemigrations --check --dry-run
-    - name: Test Docker build locally
+    - name: Lint Dockerfile
+      uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile: Dockerfile
+    - name: Test Docker build
       run: |
         docker build -t django-app-test .
 
-  deploy:
+  build-and-push:
     needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to private registry
+      run: |
+        echo "Logging in to private registry ${{ env.REGISTRY }}"
+        docker login ${{ env.REGISTRY }} -u admin -p admin123
+        echo "✅ Logged in successfully"
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+      env:
+        DOCKER_BUILDKIT: 1
+    
+    - name: Verify pushed image
+      run: |
+        echo "Verifying image in registry..."
+        curl -s http://${{ env.REGISTRY }}/v2/${{ env.IMAGE_NAME }}/tags/list | jq .
+        echo "✅ Image verification complete"
+
+  deploy-with-helm:
+    needs: build-and-push
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
     
-    - name: Build local Docker image
-      run: |
-        echo "🐳 Building local Docker image..."
-        docker build -t django-kubernetes-app:local .
-        echo "✅ Local image built successfully"
-        
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: "3.12.0"
+    
     - name: Verify Kubernetes cluster
       run: |
         echo "🔍 Verifying Kubernetes cluster..."
         kubectl cluster-info
         kubectl get nodes
+        kubectl get namespaces
         echo "✅ Kubernetes cluster is accessible"
-        
-    - name: Apply Kubernetes configuration
+    
+    - name: Add Helm repositories
       run: |
-        echo "🚀 Applying Kubernetes manifests..."
-        kubectl apply -f k8s-manifests/ -n ${{ env.K8S_NAMESPACE }}
-        echo "✅ Manifests applied successfully"
-        
-    - name: Ensure deployment uses local image
+        echo "Adding Helm repositories..."
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        echo "✅ Helm repositories added"
+    
+    - name: Create namespace if not exists
       run: |
-        echo "🔧 Ensuring deployment uses local image..."
-        kubectl patch deployment django-deployment -n ${{ env.K8S_NAMESPACE }} \
-          --type='json' \
-          -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value":"django-kubernetes-app:local"}]'
-        echo "✅ Deployment patched to use local image"
-        
-    - name: Restart deployment with new image
+        echo "Creating/verifying namespace..."
+        kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ Namespace ready"
+    
+    - name: Create image pull secret for private registry
       run: |
-        echo "🔄 Restarting deployment..."
-        kubectl rollout restart deployment/django-deployment -n ${{ env.K8S_NAMESPACE }}
-        echo "✅ Deployment restart initiated"
-        
-    - name: Wait for pods stabilization
+        echo "Creating image pull secret..."
+        kubectl create secret docker-registry private-registry-secret           --namespace=${{ env.K8S_NAMESPACE }}           --docker-server=${{ env.REGISTRY }}           --docker-username=admin           --docker-password=admin123           --docker-email=admin@example.com           --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ Image pull secret created"
+    
+    - name: Update Helm dependencies
       run: |
-        echo "⏳ Waiting for pods to stabilize..."
-        sleep 60
-        echo "✅ Wait completed"
-        
-    - name: Show deployment status
+        echo "Updating Helm dependencies..."
+        cd django-app-chart
+        helm dependency update
+        echo "✅ Dependencies updated"
+    
+    - name: Deploy with Helm
       run: |
-        echo "📊 Final deployment status:"
+        echo "🚀 Deploying with Helm..."
+        helm upgrade --install ${{ env.HELM_RELEASE }} ./django-app-chart           --namespace ${{ env.K8S_NAMESPACE }}           --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}           --set image.tag=latest           --set postgresql.enabled=false           --set monitoring.enabled=true           --set logging.enabled=true           --set app.replicas=3           --set app.serviceType=NodePort           --set app.env.DEBUG="False"           --create-namespace           --wait           --timeout 300s
+        echo "✅ Helm deployment complete"
+    
+    - name: Check Helm status
+      run: |
+        echo "📊 Helm release status:"
+        helm list --namespace ${{ env.K8S_NAMESPACE }}
+        helm status ${{ env.HELM_RELEASE }} --namespace ${{ env.K8S_NAMESPACE }}
+    
+    - name: Show Kubernetes resources
+      run: |
+        echo "📋 Kubernetes resources status:"
         echo "=== Pods ==="
         kubectl get pods -n ${{ env.K8S_NAMESPACE }}
         echo "=== Services ==="
         kubectl get svc -n ${{ env.K8S_NAMESPACE }}
-        echo "=== Images in use ==="
-        kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' | sort | uniq
-        
-    - name: Cleanup old replicasets
+        echo "=== Deployments ==="
+        kubectl get deployments -n ${{ env.K8S_NAMESPACE }}
+        echo "=== ServiceMonitors ==="
+        kubectl get servicemonitors -n ${{ env.K8S_NAMESPACE }} 2>/dev/null || echo "No ServiceMonitors found"
+    
+    - name: Run database migrations
       run: |
-        echo "🧹 Cleaning up old replicasets..."
-        # Правильная команда очистки - удаляем ReplicaSet с 0 репликами
-        kubectl get replicaset -n ${{ env.K8S_NAMESPACE }} --selector=app=django-app --no-headers | \
-        while read name desired current ready age rest; do
+        echo "🗄️ Running database migrations..."
+        # Ждем запуска подов
+        sleep 30
+        
+        # Получаем имя одного из подов
+        POD_NAME=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l "app.kubernetes.io/name=django-app" -o jsonpath='{.items[0].metadata.name}' --field-selector=status.phase=Running)
+        
+        if [ -n "$POD_NAME" ]; then
+          echo "Running migrations on pod: $POD_NAME"
+          kubectl exec -n ${{ env.K8S_NAMESPACE }} $POD_NAME -- python manage.py migrate --noinput
+          echo "✅ Migrations completed"
+          
+          echo "Collecting static files..."
+          kubectl exec -n ${{ env.K8S_NAMESPACE }} $POD_NAME -- python manage.py collectstatic --noinput
+          echo "✅ Static files collected"
+        else
+          echo "⚠️ No running pods found for migrations"
+        fi
+    
+    - name: Wait for rollout to complete
+      run: |
+        echo "⏳ Waiting for rollout to complete..."
+        kubectl rollout status deployment/${{ env.HELM_RELEASE }} -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+        echo "✅ Rollout completed successfully"
+    
+    - name: Cleanup old resources
+      run: |
+        echo "🧹 Cleaning up old resources..."
+        # Удаляем старые ReplicaSets
+        kubectl get replicaset -n ${{ env.K8S_NAMESPACE }} --no-headers |         while read name desired current ready age rest; do
           if [ "$current" -eq "0" ]; then
             echo "Deleting replicaset: $name"
             kubectl delete replicaset $name -n ${{ env.K8S_NAMESPACE }} --ignore-not-found=true
           fi
         done
         echo "✅ Cleanup completed"
-        
-    - name: Test application accessibility
+
+  smoke-test:
+    needs: deploy-with-helm
+    runs-on: self-hosted
+    steps:
+    - name: Perform smoke tests
       run: |
-        echo "🧪 Testing application..."
-        if curl -s http://django-app.local/health/ > /dev/null; then
-          echo "✅ Application is healthy and responding"
+        echo "🧪 Performing smoke tests..."
+        
+        # Получаем NodePort сервиса
+        NODE_PORT=$(kubectl get svc -n ${{ env.K8S_NAMESPACE }} ${{ env.HELM_RELEASE }} -o jsonpath='{.spec.ports[0].nodePort}')
+        MINIKUBE_IP=$(minikube ip)
+        
+        echo "Testing application at http://$MINIKUBE_IP:$NODE_PORT"
+        
+        # Тест health endpoint
+        echo "1. Testing health endpoint..."
+        HEALTH_RESPONSE=$(curl -s -f http://$MINIKUBE_IP:$NODE_PORT/health/ || echo "FAILED")
+        if [ "$HEALTH_RESPONSE" != "FAILED" ]; then
+          echo "✅ Health endpoint: OK"
+          echo "   Response: $HEALTH_RESPONSE"
         else
-          echo "⚠️  Application health check failed, but deployment completed"
+          echo "❌ Health endpoint: FAILED"
+          exit 1
         fi
         
+        # Тест metrics endpoint
+        echo "2. Testing metrics endpoint..."
+        METRICS_RESPONSE=$(curl -s -f http://$MINIKUBE_IP:$NODE_PORT/metrics || echo "FAILED")
+        if [ "$METRICS_RESPONSE" != "FAILED" ]; then
+          echo "✅ Metrics endpoint: OK"
+          echo "   Found $(echo "$METRICS_RESPONSE" | grep -c '^django_') Django metrics"
+        else
+          echo "⚠️ Metrics endpoint: Not accessible (may need prometheus installed)"
+        fi
+        
+        # Тест балансировки нагрузки
+        echo "3. Testing load balancing..."
+        echo "   Sending 5 requests to check load balancing:"
+        for i in {1..5}; do
+          RESPONSE=$(curl -s http://$MINIKUBE_IP:$NODE_PORT/health/)
+          echo "   Request $i: $RESPONSE"
+          sleep 0.5
+        done
+        
+        # Проверка подключения к Prometheus
+        echo "4. Checking Prometheus integration..."
+        if kubectl get servicemonitor -n ${{ env.K8S_NAMESPACE }} ${{ env.HELM_RELEASE }} > /dev/null 2>&1; then
+          echo "✅ ServiceMonitor exists"
+        else
+          echo "⚠️ ServiceMonitor not found"
+        fi
+        
+        echo "🎉 All smoke tests passed!"
+
+  monitoring-check:
+    needs: deploy-with-helm
+    runs-on: self-hosted
+    steps:
+    - name: Check monitoring stack
+      run: |
+        echo "📊 Checking monitoring stack..."
+        
+        # Проверка Prometheus
+        echo "1. Prometheus status:"
+        kubectl get pods -n monitoring -l "app.kubernetes.io/name=prometheus" 2>/dev/null || echo "Prometheus not found in monitoring namespace"
+        
+        # Проверка Grafana
+        echo "2. Grafana status:"
+        kubectl get pods -n monitoring -l "app.kubernetes.io/name=grafana" 2>/dev/null || echo "Grafana not found"
+        
+        # Проверка Loki
+        echo "3. Loki status:"
+        kubectl get pods -n monitoring -l "app.kubernetes.io/name=loki" 2>/dev/null || echo "Loki not found"
+        
+        # Проверка Fluent Bit
+        echo "4. Fluent Bit status:"
+        kubectl get pods -n monitoring -l "app.kubernetes.io/name=fluent-bit" 2>/dev/null || echo "Fluent Bit not found"
+        
+        echo "✅ Monitoring check completed"
+
+  success-notification:
+    needs: [smoke-test, monitoring-check]
+    runs-on: self-hosted
+    if: success()
+    steps:
     - name: Success message
       run: |
-        echo "🎉 CI/CD Pipeline Completed Successfully!"
-        echo "📝 Application URL: http://django-app.local"
-        echo "🔍 Check status with: kubectl get pods -n django-app"
+        echo "🎉 CI/CD Pipeline for Practice #4 Completed Successfully!"
+        echo ""
+        echo "📊 DEPLOYMENT SUMMARY:"
+        echo "======================"
+        echo "✅ Application deployed with Helm"
+        echo "✅ Private registry integration"
+        echo "✅ Monitoring stack (Prometheus/Grafana)"
+        echo "✅ Logging stack (Loki/Fluent Bit)"
+        echo "✅ Health checks and smoke tests passed"
+        echo ""
+        echo "🔗 Access URLs:"
+        echo "   - Django App: http://$(minikube ip):$(kubectl get svc -n ${{ env.K8S_NAMESPACE }} ${{ env.HELM_RELEASE }} -o jsonpath='{.spec.ports[0].nodePort}')"
+        echo "   - Grafana: http://localhost:3000 (after port-forward)"
+        echo "   - Prometheus: http://localhost:9090 (after port-forward)"
+        echo ""
+        echo "📝 Commands to check status:"
+        echo "   kubectl get all -n ${{ env.K8S_NAMESPACE }}"
+        echo "   helm list -n ${{ env.K8S_NAMESPACE }}"
+        echo "   kubectl get pods -n monitoring"

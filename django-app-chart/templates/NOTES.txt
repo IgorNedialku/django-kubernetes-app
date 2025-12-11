@@ -1,0 +1,9 @@
+1. Django приложение развернуто!
+
+2. Проверьте сервис:
+   kubectl get svc {{ include "django-app.fullname" . }} -n {{ .Release.Namespace }}
+
+3. PostgreSQL доступен как: {{ .Release.Name }}-postgresql:5432
+
+4. Статус подов:
+   kubectl get pods -n {{ .Release.Namespace }}

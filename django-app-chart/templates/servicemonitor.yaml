@@ -1,0 +1,17 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "django-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "django-app.selectorLabels" . | nindent 6 }}
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+{{- end }}
