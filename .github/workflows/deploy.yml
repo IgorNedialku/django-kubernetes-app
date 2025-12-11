@@ -17,6 +17,24 @@ jobs:
     runs-on: ubuntu-latest  # ← Изменили на self-hosted
     steps:
     - uses: actions/checkout@v4
+    - name: Pre-cleanup fix
+      run: |
+        echo "Running pre-cleanup ownership fix..."
+        # Получаем реального пользователя системы
+        REAL_USER=$(stat -c '%U' "$HOME")
+        REAL_GROUP=$(stat -c '%G' "$HOME")
+    
+        # Меняем владельца ВСЕЙ папки _work
+        WORK_DIR="$HOME/actions-runner/_work"
+        if [ -d "$WORK_DIR" ]; then
+          echo "Fixing ownership of $WORK_DIR to $REAL_USER:$REAL_GROUP"
+          sudo chown -R $REAL_USER:$REAL_GROUP "$WORK_DIR"
+          sudo chmod -R 755 "$WORK_DIR"
+        fi
+    
+        # Также фиксим текущий workspace
+        sudo chown -R $REAL_USER:$REAL_GROUP "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
