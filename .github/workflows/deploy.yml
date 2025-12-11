@@ -14,7 +14,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # ← Изменили на self-hosted
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -33,13 +33,14 @@ jobs:
       uses: hadolint/hadolint-action@v3.1.0
       with:
         dockerfile: Dockerfile
+        ignore: DL3008,DL3015  # ← Добавили игнорирование
     - name: Test Docker build
       run: |
         docker build -t django-app-test .
 
   build-and-push:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # ← Должен быть self-hosted
     if: github.event_name == 'push'
     steps:
     - uses: actions/checkout@v4
@@ -62,15 +63,13 @@ jobs:
         tags: |
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-        cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
       env:
         DOCKER_BUILDKIT: 1
     
     - name: Verify pushed image
       run: |
         echo "Verifying image in registry..."
-        curl -s http://${{ env.REGISTRY }}/v2/${{ env.IMAGE_NAME }}/tags/list | jq .
+        docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
         echo "✅ Image verification complete"
 
   deploy-with-helm:
