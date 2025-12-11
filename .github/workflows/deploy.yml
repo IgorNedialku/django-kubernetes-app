@@ -15,6 +15,9 @@ env:
 jobs:
   test:
     runs-on: self-hosted  # ← Изменили на self-hosted
+    container:
+      image: ubuntu:22.04
+      options: --user root
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
