@@ -44,7 +44,12 @@ jobs:
     if: github.event_name == 'push'
     steps:
     - uses: actions/checkout@v4
-    
+    - name: Fix workspace permissions
+      run: |
+        echo "Fixing permissions for user: $(whoami)"
+        sudo chown -R $(whoami):$(id -gn $(whoami)) "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       
@@ -78,7 +83,12 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
-    
+    - name: Fix workspace permissions
+      run: |
+        echo "Fixing permissions for user: $(whoami)"
+        sudo chown -R $(whoami):$(id -gn $(whoami)) "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
+
     - name: Set up Helm
       uses: azure/setup-helm@v3
       with:
@@ -187,6 +197,12 @@ jobs:
     needs: deploy-with-helm
     runs-on: self-hosted
     steps:
+    - name: Fix workspace permissions
+      run: |
+        echo "Fixing permissions for user: $(whoami)"
+        sudo chown -R $(whoami):$(id -gn $(whoami)) "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
+
     - name: Perform smoke tests
       run: |
         echo "🧪 Performing smoke tests..."
@@ -241,6 +257,12 @@ jobs:
     needs: deploy-with-helm
     runs-on: self-hosted
     steps:
+    - name: Fix workspace permissions
+      run: |
+        echo "Fixing permissions for user: $(whoami)"
+        sudo chown -R $(whoami):$(id -gn $(whoami)) "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
+
     - name: Check monitoring stack
       run: |
         echo "📊 Checking monitoring stack..."
@@ -268,6 +290,12 @@ jobs:
     runs-on: self-hosted
     if: success()
     steps:
+    - name: Fix workspace permissions
+      run: |
+        echo "Fixing permissions for user: $(whoami)"
+        sudo chown -R $(whoami):$(id -gn $(whoami)) "$GITHUB_WORKSPACE"
+        sudo chmod -R 755 "$GITHUB_WORKSPACE"
+
     - name: Success message
       run: |
         echo "🎉 CI/CD Pipeline for Practice #4 Completed Successfully!"
